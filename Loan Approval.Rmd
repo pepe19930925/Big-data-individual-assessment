@@ -1,0 +1,624 @@
+---
+title: "Credit Assessment and Approval Prediction"
+author: "My Notebook"
+date: "2024-12-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(lattice)
+library(caTools)
+library(party)
+library(dplyr)
+library(magrittr)
+
+
+```
+
+
+```{r cars}
+setwd('D:/')
+train=read.csv('train.csv')
+test=read.csv('test.csv')
+head(train)
+```
+
+```{r}
+train <- train %>%
+  mutate(across(everything(), ~ ifelse(. == "", NA, .)))
+
+test <- test %>%
+  mutate(across(everything(), ~ ifelse(. == "", NA, .)))
+
+test$Loan_Status = NA
+
+data=rbind(train, test)
+dim(data)
+
+```
+
+## Work on Missing Variables
+
+
+```{r}
+replace_null_with_mode <- function(x) {
+  # Check if x is NULL
+  if (is.null(x)) {
+    stop("Input is NULL. Please provide a valid vector or data frame column.")
+  }
+  
+  # Calculate the mode
+  mode_value <- names(which.max(table(x)))
+  
+  # Replace NA (or null-like) values with the mode
+  x[is.na(x)] <- mode_value
+  
+  return(x)
+}
+
+data$Gender = replace_null_with_mode(data$Gender)
+data$Married = replace_null_with_mode(data$Married)
+data$Dependents = replace_null_with_mode(data$Dependents)
+data$Education = replace_null_with_mode(data$Education)
+data$Self_Employed = replace_null_with_mode(data$Self_Employed)
+data$Credit_History = replace_null_with_mode(data$Credit_History)
+data$Property_Area = replace_null_with_mode(data$Property_Area)
+sum(is.null(data$Property_Area))
+
+
+## Replace Missing values with median
+replace_na_with_median <- function(df, column_name) {
+  # Check if the column exists in the dataframe
+  if (column_name %in% colnames(df)) {
+    # Replace NAs with the median of the column
+    df[[column_name]][is.na(df[[column_name]])] <- median(df[[column_name]], na.rm = TRUE)
+  } else {
+    cat("Column not found in dataframe.\n")
+  }
+  return(df)
+}
+
+
+data=replace_na_with_median(data, 'Loan_Amount_Term')
+data=replace_na_with_median(data, 'LoanAmount')
+sum(is.na(data$Loan_Amount_Term))
+
+```
+
+
+
+```{r}
+cols <- c("Gender","Married","Dependents","Education","Self_Employed", "Credit_History","Property_Area","Loan_Status")
+data[cols] <- lapply(data[cols], as.factor)
+levels(data$Gender)
+
+attach(data)
+```
+## Exploratory Analysis
+
+
+```{r}
+status_count <- train %>% group_by(Loan_Status) %>%
+  summarise(count = n())
+
+ggplot(status_count, aes(x = "", y = count, fill = Loan_Status)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(round(count / sum(count) * 100), "%")),
+            position = position_stack(vjust = 0.5)) +
+  labs(title = "Loan Status") +
+  theme_void()
+```
+
+
+
+```{r}
+gender_count <- data %>% group_by(Gender) %>%
+  summarise(count = n())
+
+ggplot(gender_count, aes(x = "", y = count, fill = Gender)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(round(count / sum(count) * 100), "%")),
+            position = position_stack(vjust = 0.5)) +
+  labs(title = "Gender Proportions") +
+  theme_void()
+```
+
+
+```{r}
+history_count <- data %>% group_by(Credit_History) %>%
+  summarise(count = n())
+
+ggplot(history_count, aes(x = "", y = count, fill = Credit_History)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(round(count / sum(count) * 100), "%")),
+            position = position_stack(vjust = 0.5)) +
+  labs(title = "Credit History Summary ") +
+  theme_void()
+```
+
+
+
+```{r}
+ggplot(data, aes(x = LoanAmount)) +
+  geom_histogram(bins = 10, fill = "darkgreen", color = "black", alpha = 0.7) +
+  labs(title = "Loan Amount Distribution", x = "Loan Amount", y = "Count") +
+  theme_minimal()
+
+```
+
+
+```{r}
+ggplot(data, aes(x = Loan_Amount_Term)) +
+  geom_histogram(bins = 10, fill = "navyblue", color = "black", alpha = 0.7) +
+  labs(title = "Loan Term Distribution", x = "Loan Amount Term", y = "Count") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(data, aes(x = LoanAmount, fill = Credit_History)) +
+  geom_histogram(bins = 12, color = "black", alpha = 0.7, position = "dodge") +
+  labs(title = "Loan Amount Distribution by History", x = "Loan Amount", y = "Count") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue"))
+```
+
+```{r}
+ggplot(data, aes(x = Gender, y = LoanAmount, fill = Gender)) +
+  geom_bar(stat = "summary", fun = "mean", color = "black", alpha = 0.7) +
+  labs(title = "Average Loan Amount by Gender", x = "Gender", y = "Average Loan AMount") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue")) 
+```
+
+```{r}
+ggplot(data, aes(x = Education, y = LoanAmount, fill = Education)) +
+  geom_bar(stat = "summary", fun = "mean", color = "black", alpha = 0.7) +
+  labs(title = "Average Loan Amount by Education Level", x = "Education", y = "Average Loan AMount") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue")) 
+```
+
+
+```{r}
+ggplot(data, aes(x = Self_Employed, y = LoanAmount, fill = Self_Employed)) +
+  geom_bar(stat = "summary", fun = "mean", color = "black", alpha = 0.7) +
+  labs(title = "Average Loan Amount by Employment", x = "Self Employed", y = "Average Loan AMount") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue")) 
+```
+
+```{r}
+ggplot(data, aes(x = Married, y = LoanAmount, fill = Married)) +
+  geom_bar(stat = "summary", fun = "mean", color = "black", alpha = 0.7) +
+  labs(title = "Average Loan Amount by Marrital Status", x = "Married", y = "Average Loan AMount") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue")) 
+```
+
+```{r}
+ggplot(data, aes(x = Married, y = ApplicantIncome, fill = Married)) +
+  geom_bar(stat = "summary", fun = "mean", color = "black", alpha = 0.7) +
+  labs(title = "Average Applicant Income by Marrital Status", x = "Married", y = "Average Income") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue")) 
+```
+
+```{r}
+ggplot(data, aes(x = Property_Area, y = LoanAmount, fill = Property_Area)) +
+  geom_bar(stat = "summary", fun = "mean", color = "black", alpha = 0.7) +
+  labs(title = "Average Loan Amount by Property Area", x = "Property Area", y = "Average Loan AMount") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue","darkblue")) 
+```
+
+
+```{r}
+ggplot(data, aes(x =ApplicantIncome, y = LoanAmount)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") + 
+  labs(title = "Loan AMount vs Applicant Income", x = "Applicant Income", y = "Loan Amount") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(data, aes(x = LoanAmount, y = CoapplicantIncome)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") + 
+  labs(title = "Loan AMount vs Coapplicant Income", x = "Loan Amount", y = "Coapplicant Income") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(data, aes(x = ApplicantIncome, y = CoapplicantIncome)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") + 
+  labs(title = "Applicant Income vs Coapplicant Income", x = "Applicant Income", y = "Coapplicant Income") +
+  theme_minimal()
+```
+
+```{r}
+
+```
+
+## Variable Encoding 
+
+```{r}
+data <- data %>%
+  mutate(Gender = case_when(
+    Gender == "Male" ~ 1,
+    Gender == "Female" ~ 0
+  ))
+
+data <- data %>%
+  mutate(Education = case_when(
+    Education == "Graduate" ~ 1,
+    Education == "Not Graduate" ~ 0
+  ))
+
+data <- data %>%
+  mutate(Married = case_when(
+    Married == "Yes" ~ 1,
+    Married == "No" ~ 0
+  ))
+
+data <- data %>%
+  mutate(Dependents = case_when(
+    Dependents == "0" ~ 0,
+    Dependents == "1" ~ 1,
+    Dependents == "2" ~ 2,
+    Dependents == "3+" ~ 3,
+  ))
+data <- data %>%
+  mutate(Self_Employed = case_when(
+    Self_Employed == "Yes" ~ 1,
+    Self_Employed == "No" ~ 0
+  ))
+
+data <- data %>%
+  mutate(Loan_Status = case_when(
+    Loan_Status == "Y" ~ 1,
+    Loan_Status == "N" ~ 0,
+    Loan_Status == NA~ NA
+  ))
+
+data$Credit_History = as.integer(data$Credit_History)
+data$Loan_Status = as.integer(data$Loan_Status)
+
+str(data)
+```
+
+```{r}
+library(fastDummies)
+encoded_data=dummy_cols(data, select_columns = c('Property_Area'))
+
+
+encoded_data=encoded_data[, !names(encoded_data) %in%
+c('Property_Area', 'Loan_ID')]
+str(encoded_data)
+```
+```{r}
+dim(test)
+train= encoded_data[0:614,]
+test=encoded_data[615:981,]
+str(train)
+```
+
+```{r}
+ggplot(train, aes(x = LoanAmount, fill = Loan_Status)) +
+  geom_histogram(bins = 12, color = "black", alpha = 0.7, position = "dodge") +
+  labs(title = "Loan Amount Distribution by History", x = "Loan Amount", y = "Count") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue"))
+```
+
+```{r}
+ggplot(train, aes(x = ApplicantIncome, fill = Loan_Status)) +
+  geom_histogram(bins = 12, color = "black", alpha = 0.7, position = "dodge") +
+  labs(title = "Loan Amount Distribution by History", x = "Loan Amount", y = "Count") +
+  theme_minimal() +
+  scale_fill_manual(values = c("darkgreen", "lightblue"))
+```
+
+
+```{r}
+library(reshape2)
+
+cor_matrix <- cor(train)
+
+cor_melted <- melt(cor_matrix)
+
+# Create the heatmap plot
+ggplot(cor_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "lightblue", high = "blue", mid = "white", midpoint = 0) +
+  labs(title = "Correlation Matrix Heatmap", x = "Variables", y = "Variables") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+train$Loan_Status <- as.factor(train$Loan_Status)
+train2 <- train[, -which(names(train)=='Loan_Status')]
+y=train$Loan_Status
+
+sample_data = sample.split(train, SplitRatio = 0.8)
+x_train <- subset(train2, sample_data == TRUE)
+x_test <- subset(train2, sample_data == FALSE)
+
+y_train <- subset(y, sample_data == TRUE)
+y_test <- subset(y, sample_data == FALSE)
+
+x_train_scaled=(scale(x_train))
+x_test_scaled=(scale(x_test))
+train_data = data.frame(y_train, x_train_scaled)
+colnames(train_data)[colnames(train_data) == "y_train"] <- "Loan_Status"
+test_data=data.frame(y_test,x_test_scaled)
+colnames(test_data)[colnames(test_data) == "y_test"] <- "Loan_Status"
+
+sum(is.na(train_data))
+
+```
+
+```{r}
+trees = rpart(Loan_Status~.,data=train_data,method="class")
+rpart.plot(trees, main='Defaulter Prediction')
+
+
+rpart.plot(
+  trees, 
+  main = "Defaulter Prediction",  # Add meaningful title
+  type = 0,                       # Show split labels at the node
+  extra = 104,                    # Display class probabilities and percentages
+  under = TRUE,                   # Show node numbers below nodes
+  faclen = 1,                     # Don't truncate factor labels
+  cex = 0.6,                      # Control font size for readability
+  tweak = 1.0,                    # Scale nodes for better spacing
+  fallen.leaves = TRUE,           # Arrange leaves at the bottom
+  shadow.col = "gray",            # Add a shadow for better contrast
+  box.palette = "RdYlGn",         # Use a color palette for class differentiation
+  branch.lty = 1,                 # Change branch line type for better clarity
+  split.cex = 1.0                 # Increase font size of split text
+)
+```
+
+```{r}
+prediction = predict(trees,test_data,type='class')
+conf_matrix= confusionMatrix(prediction, test_data$Loan_Status)
+conf_matrix
+```
+
+```{r}
+conf_table <- as.data.frame(cf_matrix$table)
+
+ggplot(data = conf_table, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = Freq), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Confusion Matrix", x = "Predicted", y = "Actual") +
+  theme_minimal()
+```
+
+
+
+```{r}
+accuracy=conf_matrix$overall['Accuracy']
+precision =conf_matrix$byClass['Pos Pred Value']
+recall=conf_matrix$byClass['Sensitivity']
+f1_score = 2*(precision*recall)/(precision+recall)
+cat("F1 Score:", f1_score, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("Accuracy:", accuracy, "\n")
+```
+
+```{r}
+# Extract variable importance
+importance <- trees$variable.importance
+
+
+print(importance)
+
+sorted_importance <- sort(importance, decreasing = TRUE)
+print(sorted_importance)
+```
+```{r}
+# plot of variable importance
+barplot(sorted_importance,
+        main = "Variable Importance",
+        col = "steelblue",
+        las = 2)
+
+```
+
+
+## Random Forest
+
+```{r}
+library(randomForest)
+rf_model=randomForest(Loan_Status~., data=train_data, ntree=400, mtry=10, importance=TRUE)
+rf_prediction=predict(rf_model,test_data)
+cf_matrix= confusionMatrix(rf_prediction, test_data$Loan_Status)
+print(cf_matrix)
+```
+
+```{r}
+accuracy=cf_matrix$overall['Accuracy']
+precision =cf_matrix$byClass['Pos Pred Value']
+recall=cf_matrix$byClass['Sensitivity']
+f1_score = 2*(precision*recall)/(precision+recall)
+cat("F1 Score:", f1_score, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("Accuracy:", accuracy, "\n")
+```
+
+```{r}
+conf_table <- as.data.frame(cf_matrix$table)
+
+ggplot(data = conf_table, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = Freq), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Confusion Matrix", x = "Predicted", y = "Actual") +
+  theme_minimal()
+```
+
+
+
+```{r}
+# Extract importance scores
+importance_values <- importance(rf_model)
+
+# Calculate the mean importance for each feature
+mean_importance <- rowMeans(importance_values[, c("MeanDecreaseAccuracy", "MeanDecreaseGini")])
+
+#create dataframe
+importance_df <- data.frame(
+  Feature = names(mean_importance),
+  MeanImportance = mean_importance
+)
+
+print(importance_df)
+
+```
+
+
+```{r}
+ggplot(importance_df, aes(x = reorder(Feature, MeanImportance), y = MeanImportance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Mean Feature Importance",
+    x = "Features",
+    y = "Mean Importance"
+  ) +
+  theme_minimal()
+```
+
+## Naive Bayes Model
+
+```{r}
+naive_model = naiveBayes(Loan_Status~., data=train_data)
+naive_prediction=predict(naive_model, test_data)
+cf_matrix=confusionMatrix(naive_prediction, test_data$Loan_Status)
+print(cf_matrix)
+```
+```{r}
+conf_table <- as.data.frame(cf_matrix$table)
+
+ggplot(data = conf_table, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = Freq), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Confusion Matrix", x = "Predicted", y = "Actual") +
+  theme_minimal()
+```
+
+
+
+```{r}
+accuracy=cf_matrix$overall['Accuracy']
+precision =cf_matrix$byClass['Pos Pred Value']
+recall=cf_matrix$byClass['Sensitivity']
+f1_score = 2*(precision*recall)/(precision+recall)
+cat("F1 Score:", f1_score, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("Accuracy:", accuracy, "\n")
+```
+
+## Support Vector Model
+
+
+```{r}
+svm_model = svm(Loan_Status~., data=train_data,kernel='linear', cost=3, gamma=0.1)
+svm_prediction=predict(svm_model, test_data)
+cf_matrix=confusionMatrix(svm_prediction, test_data$Loan_Status)
+print(cf_matrix)
+```
+
+
+```{r}
+conf_table <- as.data.frame(cf_matrix$table)
+
+ggplot(data = conf_table, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = Freq), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Confusion Matrix", x = "Predicted", y = "Actual") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+accuracy=cf_matrix$overall['Accuracy']
+precision =cf_matrix$byClass['Pos Pred Value']
+recall=cf_matrix$byClass['Sensitivity']
+f1_score = 2*(precision*recall)/(precision+recall)
+cat("F1 Score:", f1_score, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("Accuracy:", accuracy, "\n")
+```
+
+
+```{r}
+support_vectors <- svm_model$SV
+coefficients <- svm_model$coefs
+
+#calculate beta values 
+beta_values <- t(support_vectors) %*% coefficients
+
+
+print(beta_values)
+```
+
+
+```{r}
+beta_values <- c(Gender = -2.125563e-05,
+                 Married = 3.937504e-05,
+                 Dependents = -6.849998e-05,
+                 Education = 2.783876e-05,
+                 Self_Employed = 2.862173e-05,
+                 ApplicantIncome = 7.993840e-06,
+                 CoapplicantIncome = -6.899905e-05,
+                 LoanAmount = 4.302701e-05,
+                 Loan_Amount_Term = -5.515153e-05,
+                 Credit_History = 7.053994e-01,
+                 Property_Area_Rural = -2.075645e-05,
+                 Property_Area_Semiurban = 4.271677e-05,
+                 Property_Area_Urban = -2.439072e-05)
+
+
+odds_ratios <- exp(beta_values)
+
+probabilities <- odds_ratios / (1 + odds_ratios)
+
+
+results_df <- data.frame(
+  Variable = names(beta_values),
+  Beta = beta_values,
+  Odds_Ratio = odds_ratios,
+  Probability = probabilities
+)
+
+
+View(results_df)
+
+```
+
